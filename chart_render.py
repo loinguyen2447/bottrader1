@@ -171,8 +171,8 @@ CHART_TEMPLATE = r"""<!DOCTYPE html>
   <p id="status"></p>
   <p class="hint">
     🔺 đỉnh (pivot high) · 🔻 đáy (pivot low) · đường đứt nét = trendline (nâu = hỗ trợ, tím = kháng cự)
-    · ⭐ = điểm giá đóng cửa phá trendline (breakout) · nếu 2 đáy/2 đỉnh thuộc 2 mốc kẻ trend
-    phân kỳ RSI → báo <b>PHA VỠ THẬT</b>
+    · ⭐ = điểm giá đóng cửa phá trendline (breakout) · nếu từ mốc đầu trendline đến lúc phá vỡ,
+    2 đáy/2 đỉnh đi ngược với RSI (đường nối các đáy RSI dốc lên khi giá giảm dần) → báo <b>PHA VỠ THẬT</b>
   </p>
 </div>
 
@@ -354,10 +354,18 @@ const EMBEDDED_STATE = __CHART_STATE__;
     if (state.rsi_divergence) {
       const d = state.rsi_divergence;
       const kind = d.kind === 'bullish' ? 'DƯƠNG' : d.kind === 'bearish' ? 'ÂM' : 'không';
-      info += '<br>Phân kỳ RSI tại 2 điểm thuộc 2 mốc kẻ trend: ' + kind + ' — ' +
+      const w = d.window || {};
+      const dp = w.deepest || {};
+      const le = w.last_extreme || {};
+      const slope = (w.rsi_slope == null) ? '' : ' · nối cực trị RSI ' +
+              Number(dp.rsi).toFixed(1) + ' (' + (dp.time || '').slice(0, 10) + ') → ' +
+              Number(le.rsi).toFixed(1) + ' (' + (le.time || '').slice(0, 10) + '), dốc ' +
+              (w.rsi_slope >= 0 ? '+' : '') + Number(w.rsi_slope).toFixed(3) + '/nến';
+      info += '<br>Quan sát RSI ' + (w.from || '').slice(0, 10) + ' → ' +
+              (w.to || '').slice(0, 10) + ': ' + kind + ' — 2 điểm ' +
               (d.p1.time || '').slice(0, 10) + ' giá ' + d.p1.price + ' (RSI ' +
               Number(d.p1.rsi).toFixed(1) + ') → ' + (d.p2.time || '').slice(0, 10) +
-              ' giá ' + d.p2.price + ' (RSI ' + Number(d.p2.rsi).toFixed(1) + ')';
+              ' giá ' + d.p2.price + ' (RSI ' + Number(d.p2.rsi).toFixed(1) + ')' + slope;
     }
     if (state.message) info += ' &nbsp;|&nbsp; ' + state.message;
     infoEl.innerHTML = info;
@@ -384,6 +392,7 @@ const EMBEDDED_STATE = __CHART_STATE__;
       statusEl.textContent = 'Cập nhật lúc ' + state.updated + ' · tự làm mới mỗi 2 giây · ' +
                              state.bars.length + ' nến ngày';
     } catch (e) {
+      // Chế độ tĩnh (không có chart_state.json): dừng poll để tránh lỗi lặp lại
       const hasData = EMBEDDED_STATE && EMBEDDED_STATE.bars && EMBEDDED_STATE.bars.length > 0;
       if (hasData) {
         statusEl.className = '';
@@ -393,8 +402,9 @@ const EMBEDDED_STATE = __CHART_STATE__;
         statusEl.className = 'err';
         statusEl.textContent = 'Chưa có dữ liệu: chạy main.py để bot ghi chart.html.';
       }
+      return; // không lên lịch poll tiếp
     }
-    setTimeout(poll, 2000);
+    setTimeout(poll, 2000); // chế độ live (http.server): tiếp tục tự làm mới
   }
   poll();
 })();

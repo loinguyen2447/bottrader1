@@ -97,8 +97,9 @@ python main.py
 1. **Chỉ dùng nến đã đóng** — `data_feed.get_closed_rates()` bỏ nến đang chạy để tránh repaint.
 2. **Trendline chỉ kẻ khi có mô hình rõ ràng** (HH+HL hoặc LH+LL). Cấu trúc hỗn hợp
    (ví dụ LH + HL — giá co lại thành tam giác) thì bot báo `chua ro`, **không kẻ** trendline.
-3. **"Phá vỡ thật"** = phá trendline + 2 đáy/đỉnh thuộc 2 điểm kẻ trend có **phân kỳ RSI**
-   (giá thấp hơn nhưng RSI cao hơn — mô hình giảm; hoặc ngược lại — mô hình tăng).
+3. **"Phá vỡ thật"** = phá trendline + phân kỳ RSI tại 2 điểm thuộc 2 mốc kẻ trend:
+   - Mô hình GIẢM: 2 đáy giá thấp dần nhưng đường nối các **đáy RSI dốc lên** (từ đáy RSI sâu nhất).
+   - Mô hình TĂNG: 2 đỉnh giá cao dần nhưng **RSI tại đỉnh sau thấp hơn** đỉnh trước.
 4. Nến D1 đóng 1 lần/ngày, W1 1 lần/tuần — bot vẫn poll mỗi `check_interval` giây nhưng
    chỉ phân tích khi có nến mới thật sự đóng.
 5. MT5 Python không có API vẽ object lên terminal → biểu đồ hiển thị qua file HTML.

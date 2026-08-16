@@ -46,14 +46,14 @@ flowchart TD
     OK -- "Lỗi" --> Err(["KẾT THÚC<br/>RuntimeError: kiểm tra terminal MT5"])
     OK -- "OK" --> Init["Khởi tạo:<br/>DataFeed(D1, 300 nến)<br/>BreakoutMonitor(deviation=6.0%)<br/>RSI(period=14)"]
     Init --> Warmup["Khởi động (warm-up):<br/>lặp từng nến lịch sử đã đóng:<br/>• mon.on_new_bar(...) → ZigZag + trendline<br/>• rsi.update(close)<br/><i>(làm cho chỉ báo 'sẵn sàng' từ nến hiện tại)</i>"]
-    Warmup --> Mark["Đánh dấu nến đã xử lý:<br/>feed.has_new_bar()<br/><i>(lần gọi đầu luôn trả True và bị 'nuốt'</i><br/><i>→ vòng lặp không chạy lại nến vừa nạp)</i>"]
+    Warmup --> Mark["Đánh dấu nến đã xử lý:<br/>feed.mark_processed(df)<br/><i>(dùng df đã nạp, không fetch lại</i><br/><i>→ vòng lặp không chạy lại nến vừa warm-up)</i>"]
     Mark --> PrintInit["In trạng thái hiện tại:<br/>mô hình + trendline + RSI + breakout"]
     PrintInit --> Loop["VÒNG LẶP CHÍNH"]
 
     Loop --> Sleep["Chờ CHECK_INTERVAL = 2 giây"]
-    Sleep --> HasNew{"feed.has_new_bar()?<br/>có nến mới đóng<br/>so với lần kiểm tra trước?"}
-    HasNew -- "Không" --> Sleep
-    HasNew -- "Có" --> GetBar["Lấy nến đóng mới nhất:<br/>get_closed_rates().iloc[-1]"]
+    Sleep --> HasNew{"feed.next_closed()<br/>có nến mới đóng?<br/>(1 lần fetch duy nhất)<br/>→ trả DataFrame hoặc None"}
+    HasNew -- "None (chưa có)" --> Sleep
+    HasNew -- "DataFrame (có)" --> GetBar["Lấy nến đóng mới nhất:<br/>df.iloc[-1]"]
     GetBar --> Analyze["Phân tích:<br/>• mon.on_new_bar(time, high, low, close)<br/>• rsi.update(close)"]
     Analyze --> Print["In summary:<br/>mô hình (TANG/GIAM)<br/>trendline (giá trị + slope)<br/>RSI (quá mua/quá bán)<br/>trạng thái breakout"]
     Print --> Alert{"Có alert mới?<br/>(new_alert = True)"}
@@ -72,17 +72,19 @@ flowchart TD
 
 ## 3. Chi tiết từng bước
 
-### 3.1 DataFeed.has_new_bar() — phát hiện nến mới
+### 3.1 DataFeed.next_closed() — phát hiện nến mới + lấy dữ liệu (1 fetch)
 
 ```mermaid
 flowchart TD
-    S(["has_new_bar()"]) --> A["get_closed_rates()<br/>lấy dữ liệu, bỏ nến cuối đang chạy"]
+    S(["next_closed()"]) --> A["get_closed_rates()<br/>lấy dữ liệu, bỏ nến cuối đang chạy"]
     A --> B{"last_bar_time<br/>chưa có?<br/>(lần đầu)"}
-    B -- "Có" --> C["Ghi nhận nến mới nhất<br/>return True"]
+    B -- "Có" --> C["Ghi nhận nến mới nhất<br/>return DataFrame"]
     B -- "Không" --> D{"Nến mới nhất<br/>≠ last_bar_time?"}
-    D -- "Có (có nến mới đóng)" --> E["Cập nhật last_bar_time<br/>return True"]
-    D -- "Không (vẫn nến cũ)" --> F["return False<br/>→ main chờ tiếp"]
+    D -- "Có (có nến mới đóng)" --> E["Cập nhật last_bar_time<br/>return DataFrame (dùng luôn để phân tích)"]
+    D -- "Không (vẫn nến cũ)" --> F["return None<br/>→ main chờ tiếp"]
 ```
+
+> Trước đây main gọi `has_new_bar()` rồi `get_closed_rates()` → fetch 2 lần/chu kỳ; giờ `next_closed()` gộp thành 1 lần (~1.5 ms thay vì ~3 ms). Sau warm-up gọi `mark_processed(df)` để đánh dấu nến hiện tại đã xử lý.
 
 ### 3.2 ZigZag.update() — xác định điểm đảo chiều
 
@@ -178,14 +180,13 @@ sequenceDiagram
     participant RSI as RSI
 
     loop Cứ 2 giây
-        Main->>Feed: has_new_bar()
-        Feed-->>Main: False (chưa có nến mới)
+        Main->>Feed: next_closed()
+        Feed-->>Main: None (chưa có nến mới)
     end
 
     Note over Main: Nến D1 mới đóng
-    Main->>Feed: has_new_bar() → True
-    Main->>Feed: get_closed_rates().iloc[-1]
-    Feed-->>Main: bar (time, high, low, close)
+    Main->>Feed: next_closed() → DataFrame (1 fetch)
+    Feed-->>Main: bar = df.iloc[-1] (time, high, low, close)
     Main->>Mon: on_new_bar(time, high, low, close)
     Mon->>ZZ: update(time, high, low)
     ZZ-->>Mon: pivots mới (nếu có đảo chiều)

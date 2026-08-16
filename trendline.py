@@ -10,10 +10,13 @@ Logic (theo yêu cầu):
 - Khi giá ĐÓNG CỬA phá xuống dưới trendline -> thông báo "BREAKOUT".
 - Ngược lại (mô hình giảm LH + LL): kẻ trendline qua 2 ĐỈNH gần nhất,
   giá đóng cửa phá lên trên -> thông báo "BREAKOUT".
-- Xác nhận "cú phá vỡ THẬT": khi phá trendline, kiểm tra phân kỳ RSI tại 2 đáy
-  "thuộc về" 2 đỉnh kẻ trend (mỗi đỉnh có 1 đáy tạo ngay sau nó trong chuỗi xen kẽ)
-  — mô hình giảm: 2 đáy phân kỳ DƯƠNG (đáy sau thấp hơn nhưng RSI cao hơn);
-  mô hình tăng: 2 đỉnh phân kỳ ÂM (đỉnh sau cao hơn nhưng RSI thấp hơn).
+- Xác nhận "cú phá vỡ THẬT" bằng phân kỳ RSI tại 2 điểm "thuộc về" 2 điểm kẻ trend
+  (đáy sau mỗi đỉnh / đỉnh sau mỗi đáy trong chuỗi xen kẽ của ZigZag):
+  - Mô hình GIẢM (trendline qua 2 ĐỈNH): 2 đáy giá THẤP dần nhưng đường nối các ĐÁY RSI
+    (tính từ đáy RSI sâu nhất, từ điểm đầu trendline đến lúc phá vỡ) DỐC LÊN → phân kỳ
+    DƯƠNG → cú phá vỡ thật. Đáy RSI phải xuất hiện TRƯỚC đáy giá cuối L2.
+  - Mô hình TĂNG (trendline qua 2 ĐÁY): 2 đỉnh giá CAO dần nhưng RSI tại đỉnh sau (H_c)
+    THẤP HƠN RSI tại đỉnh trước (H_b) → phân kỳ ÂM → cú phá vỡ thật.
 
 Dùng chung với data_feed.py (lấy dữ liệu) và zigzag.py (tìm điểm đảo chiều).
 """
@@ -104,15 +107,17 @@ def check_breakout(df, deviation: float = 0.5) -> dict:
 class BreakoutMonitor:
     """Theo dõi live: mỗi nến mới đóng gọi on_new_bar(), báo breakout đúng 1 lần.
 
-    Cách dùng (kết hợp DataFeed.has_new_bar):
+    Cách dùng (kết hợp DataFeed.next_closed — 1 fetch duy nhất mỗi chu kỳ):
         mon = BreakoutMonitor(deviation=0.5)
         while True:
-            if feed.has_new_bar():
-                bar = feed.get_closed_rates().iloc[-1]
-                rsi.update(bar["close"])
-                r = mon.on_new_bar(bar["time"], bar["high"], bar["low"], bar["close"], rsi.value)
-                if r["new_alert"]:
-                    print(r["message"])
+            df = feed.next_closed()   # None nếu chưa có nến mới đóng
+            if df is None:
+                continue
+            bar = df.iloc[-1]
+            rsi.update(bar["close"])
+            r = mon.on_new_bar(bar["time"], bar["high"], bar["low"], bar["close"], rsi.value)
+            if r["new_alert"]:
+                print(r["message"])
     """
 
     def __init__(self, deviation: float = 0.5):
@@ -153,18 +158,33 @@ class BreakoutMonitor:
         idx, break_time = self._first_break(line)
         if idx is not None:
             result["breakout"] = True
-            div = self._rsi_divergence()
+            div = self._rsi_divergence(idx)
             result["rsi_divergence"] = div
+            # real_breakout phản ánh trạng thái phân tích HIỆN TẠI (không phụ thuộc
+            # alert-once) — nến nào cũng tính lại được
+            if div and div["divergence"]:
+                result["real_breakout"] = True
             if key != self._signaled:
                 self._signaled = key
                 result["new_alert"] = True
                 target = "ho tro" if self.trend == "up" else "khang cu"
                 if div and div["divergence"]:
-                    result["real_breakout"] = True
-                    result["message"] = (
-                        f"PHA VO THAT! Gia pha trendline {target} luc {break_time} "
-                        f"(phan ky RSI: {div['p1']['price']:.1f}->{div['p2']['price']:.1f}, "
-                        f"RSI {div['p1']['rsi']:.1f}->{div['p2']['rsi']:.1f})")
+                    if div.get("method") == "rsi_point_compare":
+                        # Mô hình TĂNG: so sánh RSI tại 2 đỉnh (H_b vs H_c)
+                        result["message"] = (
+                            f"PHA VO THAT! Gia pha trendline {target} luc {break_time} "
+                            f"(2 dinh {div['p1']['price']:.1f}->{div['p2']['price']:.1f} di nguoc RSI: "
+                            f"RSI {div['p1']['rsi']:.1f}->{div['p2']['rsi']:.1f})")
+                    else:
+                        # Mô hình GIẢM: đường nối các đáy RSI
+                        w = div["window"]
+                        dp = w.get("deepest") or {}
+                        le = w.get("last_extreme") or {}
+                        result["message"] = (
+                            f"PHA VO THAT! Gia pha trendline {target} luc {break_time} "
+                            f"(2 diem {div['p1']['price']:.1f}->{div['p2']['price']:.1f} di nguoc RSI: "
+                            f"cuc tri RSI {dp.get('rsi', 0):.1f}->{le.get('rsi', 0):.1f}, "
+                            f"slope {w['rsi_slope']:+.3f}/nen)")
                 else:
                     result["message"] = f"BREAKOUT! Gia pha trendline {target} luc {break_time}"
         return result
@@ -204,14 +224,51 @@ class BreakoutMonitor:
             return None
         return self.rsi_values[i]
 
-    def _rsi_divergence(self):
-        """Kiểm tra phân kỳ RSI tại 2 điểm 'thuộc về' 2 điểm dùng để kẻ trendline.
+    def _rsi_extremes(self, a: int, b: int, want_min: bool):
+        """Các điểm cực trị RSI (đáy nếu want_min=True, đỉnh nếu False) trong [a, b].
+
+        Trả về list [(bar_index, rsi_value), ...].
+        """
+        out = []
+        for i in range(a + 1, b):
+            v = self.rsi_values[i]
+            if v is None or self.rsi_values[i - 1] is None or self.rsi_values[i + 1] is None:
+                continue
+            if want_min and v <= self.rsi_values[i - 1] and v < self.rsi_values[i + 1]:
+                out.append((i, v))
+            if not want_min and v >= self.rsi_values[i - 1] and v > self.rsi_values[i + 1]:
+                out.append((i, v))
+        return out
+
+    @staticmethod
+    def _slope(pts) -> float:
+        """Độ dốc (hồi quy tuyến tính) của các điểm (bar_index, rsi_value)."""
+        n = len(pts)
+        if n < 2:
+            return None
+        xs = [p[0] for p in pts]
+        ys = [p[1] for p in pts]
+        mx = sum(xs) / n
+        my = sum(ys) / n
+        den = sum((x - mx) ** 2 for x in xs)
+        if den == 0:
+            return None
+        return sum((x - mx) * (y - my) for x, y in zip(xs, ys)) / den
+
+    def _rsi_divergence(self, break_idx):
+        """Xác nhận "cú phá vỡ thật" bằng cách vẽ đường nối các điểm cực trị RSI
+        (đáy RSI — mô hình giảm / đỉnh RSI — mô hình tăng) từ điểm đầu tiên của
+        trendline đến lúc phá vỡ — đúng như đường xu hướng vẽ tay trên bảng RSI.
 
         - Mô hình GIẢM: trendline qua 2 ĐỈNH; mỗi đỉnh có 1 ĐÁY tạo ngay sau nó
-          (pivot kế tiếp trong chuỗi xen kẽ). 2 đáy phân kỳ DƯƠNG (đáy sau THẤP hơn
-          nhưng RSI CAO hơn) → đà giảm yếu → cú phá vỡ thật.
-        - Mô hình TĂNG: trendline qua 2 ĐÁY; mỗi đáy có 1 ĐỈNH tạo ngay sau nó.
-          2 đỉnh phân kỳ ÂM (đỉnh sau CAO hơn nhưng RSI THẤP hơn) → cú phá vỡ thật.
+          (pivot kế tiếp trong chuỗi xen kẽ). 2 đáy giá THẤP dần mà đường nối các
+          ĐÁY RSI (tính từ đáy RSI sâu nhất, cửa sổ từ điểm đầu trendline đến lúc
+          phá vỡ) DỐC LÊN → phân kỳ DƯƠNG → cú phá vỡ thật. Đáy RSI phải xuất hiện
+          TRƯỚC đáy giá cuối L2 (nếu RSI vẫn đang giảm tại mức đáy mới thì không
+          phải phân kỳ).
+        - Mô hình TĂNG: so sánh trực tiếp RSI tại 2 đỉnh — đỉnh sau CAO hơn (HH) mà
+          RSI tại đỉnh sau THẤP HƠN → phân kỳ ÂM → cú phá vỡ thật (cách này ổn định hơn
+          đo cửa sổ vì sau đỉnh RSI cao nhất thì các đỉnh RSI tiếp theo luôn thấp hơn).
 
         Trả về dict hoặc None (chưa đủ dữ liệu / chưa xác minh được).
         """
@@ -236,16 +293,80 @@ class BreakoutMonitor:
         if r1 is None or r2 is None:
             return None
 
-        if self.trend == "down":
-            divergence = follow[1]["price"] < follow[0]["price"] and r2 > r1
-            kind = "bullish" if divergence else "none"
-        else:
-            divergence = follow[1]["price"] > follow[0]["price"] and r2 < r1
-            kind = "bearish" if divergence else "none"
+        # Cửa sổ quan sát: từ điểm ĐẦU TIÊN của trendline đến lúc phá vỡ
+        start_idx = self._index_of(pts[0]["time"])
+        if start_idx is None:
+            return None
 
+        want_min = self.trend == "down"
+
+        # ============ MÔ HÌNH TĂNG: so sánh RSI tại 2 đỉnh (phân kỳ Âm kinh điển) ============
+        # Đỉnh giá sau CAO hơn (HH) nhưng RSI tại đỉnh sau THẤP HƠN -> đà tăng yếu đi
+        # -> phá vỡ thật. (Đo cửa sổ không ổn định cho mô hình tăng vì sau đỉnh RSI
+        # cao nhất thì các đỉnh RSI tiếp theo luôn thấp hơn.)
+        if not want_min:
+            divergence = follow[1]["price"] > follow[0]["price"] and r2 < r1
+            return {
+                "divergence": divergence,
+                "kind": "bearish" if divergence else "none",
+                "method": "rsi_point_compare",
+                "window": {
+                    "from": str(pts[0]["time"]),
+                    "to": str(self.times[break_idx]),
+                    "rsi_slope": None,
+                    "note": "so sanh RSI tai 2 dinh (H_b vs H_c)",
+                },
+                "p1": {"time": str(follow[0]["time"]), "price": follow[0]["price"], "rsi": r1},
+                "p2": {"time": str(follow[1]["time"]), "price": follow[1]["price"], "rsi": r2},
+            }
+
+        # ============ MÔ HÌNH GIẢM: đường nối các ĐÁY RSI (như đường vẽ tay) ============
+        extremes = self._rsi_extremes(start_idx, break_idx, want_min=True)
+        if not extremes:
+            return None
+
+        # Đáy RSI sâu nhất làm điểm xuất phát của đường nối
+        deepest = min(extremes, key=lambda e: e[1])
+        i_deep = deepest[0]
+        after = [e for e in extremes if e[0] >= i_deep]
+
+        # Độ dốc đường nối các đáy RSI (từ đáy sâu nhất đến lúc phá vỡ).
+        # Nếu chưa có đáy RSI thứ 2 thì tạm dùng RSI lúc phá vỡ làm điểm cuối.
+        slope = self._slope(after) if len(after) >= 2 else None
+        if slope is None:
+            r_break = self.rsi_values[break_idx]
+            if r_break is not None and break_idx != i_deep:
+                slope = (r_break - deepest[1]) / (break_idx - i_deep)
+
+        # Đáy RSI phải xuất hiện TRƯỚC đáy giá cuối L2 — nếu RSI vẫn đang giảm tại
+        # mức đáy mới thì không phải phân kỳ (tránh báo nhầm khi RSI xác nhận xu hướng).
+        i_follow2 = self._index_of(follow[1]["time"])
+        guard_ok = i_follow2 is not None and i_deep < i_follow2
+
+        divergence = False
+        if guard_ok:
+            if len(after) >= 2 and slope is not None:
+                divergence = follow[1]["price"] < follow[0]["price"] and slope > 0
+            else:
+                # Chưa đủ 2 đáy RSI sau điểm sâu nhất: so RSI lúc phá vỡ với đáy đó
+                r_break = self.rsi_values[break_idx]
+                if r_break is not None:
+                    divergence = follow[1]["price"] < follow[0]["price"] and r_break > deepest[1]
+
+        kind = "bullish" if divergence else "none"
+        last_e = after[-1] if after else deepest
         return {
             "divergence": divergence,
             "kind": kind,
+            "method": "rsi_extreme_line",
+            "window": {
+                "from": str(pts[0]["time"]),
+                "to": str(self.times[break_idx]),
+                "rsi_slope": slope,
+                "deepest": {"time": str(self.times[i_deep]), "rsi": deepest[1]},
+                "last_extreme": {"time": str(self.times[last_e[0]]), "rsi": last_e[1]},
+                "note": None if guard_ok else "RSI dat day tai/sau day gia cuoi - khong phan ky",
+            },
             "p1": {"time": str(follow[0]["time"]), "price": follow[0]["price"], "rsi": r1},
             "p2": {"time": str(follow[1]["time"]), "price": follow[1]["price"], "rsi": r2},
         }

@@ -105,8 +105,20 @@ def _print_summary(bar, result: dict, rsi_value):
     print(f"Breakout : {state}")
     if div:
         kind = "DUONG" if div["kind"] == "bullish" else "AM" if div["kind"] == "bearish" else "khong"
-        print(f"Phan ky  : {kind} | gia {div['p1']['price']:.1f}->{div['p2']['price']:.1f}, "
-              f"RSI {div['p1']['rsi']:.1f}->{div['p2']['rsi']:.1f}")
+        w = div["window"]
+        if div.get("method") == "rsi_point_compare":
+            # Mô hình TĂNG: so sánh RSI tại 2 đỉnh
+            print(f"Phan ky  : {kind} | 2 dinh {div['p1']['price']:.1f}->{div['p2']['price']:.1f} "
+                  f"nguoc RSI ({div['p1']['rsi']:.1f}->{div['p2']['rsi']:.1f}), "
+                  f"{w['from'][:10]} -> {w['to'][:10]})")
+        else:
+            # Mô hình GIẢM: đường nối các đáy RSI
+            dp = w.get("deepest") or {}
+            le = w.get("last_extreme") or {}
+            slope_txt = f"{w['rsi_slope']:+.3f}" if w.get("rsi_slope") is not None else "n/a"
+            print(f"Phan ky  : {kind} | 2 diem {div['p1']['price']:.1f}->{div['p2']['price']:.1f} "
+                  f"nguoc RSI, cuc tri RSI {dp.get('rsi', 0):.1f}->{le.get('rsi', 0):.1f} "
+                  f"(slope {slope_txt}/nen, {w['from'][:10]} -> {w['to'][:10]})")
 
 
 def main():
@@ -123,9 +135,9 @@ def main():
             rsi.update(bar["close"])  # cập nhật RSI trước để monitor dùng cho xác nhận phân kỳ
             last = mon.on_new_bar(bar["time"], bar["high"], bar["low"], bar["close"], rsi.value)
 
-        # Đánh dấu nến hiện tại đã xử lý: tránh vòng lặp chạy lại nến vừa nạp
-        # (lần gọi has_new_bar() đầu tiên luôn trả True theo thiết kế của DataFeed)
-        feed.has_new_bar()
+        # Đánh dấu nến hiện tại đã xử lý (dùng df đã nạp, không fetch lại):
+        # tránh vòng lặp chính xử lý lại nến vừa warm-up
+        feed.mark_processed(df)
 
         print(f"[{SYMBOL}] Trang thai hien tai:")
         _print_summary(df.iloc[-1], last, rsi.value)
@@ -135,11 +147,14 @@ def main():
 
         while True:
             time.sleep(CHECK_INTERVAL)
-            if not feed.has_new_bar():
+            # next_closed(): đúng 1 lần fetch duy nhất — vừa phát hiện nến mới vừa
+            # lấy dữ liệu để phân tích (trước đây gọi has_new_bar() + get_closed_rates()
+            # nên fetch 2 lần/chu kỳ)
+            df = feed.next_closed()
+            if df is None:
                 continue  # chưa có nến mới đóng -> chờ tiếp
 
             # Có nến mới đóng: chạy đúng 1 lượt kiểm tra
-            df = feed.get_closed_rates()
             bar = df.iloc[-1]
             rsi.update(bar["close"])
             result = mon.on_new_bar(bar["time"], bar["high"], bar["low"], bar["close"], rsi.value)

@@ -52,20 +52,41 @@ class DataFeed:
     def has_new_bar(self) -> bool:
         """
         Kiểm tra xem đã có nến mới đóng hay chưa (so với lần gọi trước).
-        Dùng trong vòng lặp chính để tránh tính lại ZigZag/trendline mỗi tick.
+        Lưu ý: mỗi lần gọi đều fetch dữ liệu từ MT5 — trong vòng lặp chính nên dùng
+        `next_closed()` để vừa phát hiện nến mới vừa lấy luôn dữ liệu, tránh fetch 2 lần.
+        """
+        return self.next_closed() is not None
+
+    def next_closed(self):
+        """
+        Lấy dữ liệu nến đã đóng mới nhất NẾU có nến mới (so với lần gọi trước).
+
+        - Lần gọi đầu tiên (hoặc ngay sau khi khởi tạo): coi như có dữ liệu mới,
+          đánh dấu mốc và trả về DataFrame.
+        - Có nến mới đóng: cập nhật mốc và trả về DataFrame (dùng luôn cho phân tích).
+        - Chưa có nến mới: trả về None.
+
+        Dùng trong vòng lặp chính để vừa phát hiện nến mới vừa lấy dữ liệu trong
+        đúng 1 lần fetch duy nhất.
         """
         df = self.get_closed_rates()
         latest_time = df["time"].iloc[-1]
 
-        if self.last_bar_time is None:
-            self.last_bar_time = latest_time
-            return True  # lần đầu chạy, coi như có dữ liệu mới
+        if self.last_bar_time is not None and latest_time == self.last_bar_time:
+            return None
 
-        if latest_time != self.last_bar_time:
-            self.last_bar_time = latest_time
-            return True
+        self.last_bar_time = latest_time
+        return df
 
-        return False
+    def mark_processed(self, df=None):
+        """
+        Đánh dấu nến cuối hiện tại đã xử lý — gọi SAU khi nạp lịch sử lúc khởi động
+        để vòng lặp chính không xử lý lại nến vừa warm-up. Nếu không truyền df thì
+        tự fetch một lần.
+        """
+        if df is None:
+            df = self.get_closed_rates()
+        self.last_bar_time = df["time"].iloc[-1]
 
     def shutdown(self):
         mt5.shutdown()

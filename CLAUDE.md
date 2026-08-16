@@ -25,7 +25,7 @@ python rsi.py           # RSI Wilder 100 nến
 | File | Vai trò |
 |---|---|
 | `main.py` | Vòng lặp chính: kết nối MT5 → warm-up 300 nến → poll mỗi 2s → khi có nến mới đóng thì phân tích 1 lần, in kết quả, ghi biểu đồ |
-| `data_feed.py` | `DataFeed`: kết nối MT5, `get_rates()` (OHLCV), `get_closed_rates()` (**chỉ nến đã đóng**), `has_new_bar()` phát hiện nến mới |
+| `data_feed.py` | `DataFeed`: kết nối MT5, `get_rates()` (OHLCV), `get_closed_rates()` (**chỉ nến đã đóng**), `next_closed()` phát hiện nến mới + lấy luôn dữ liệu trong 1 fetch, `mark_processed()` đánh dấu sau warm-up |
 | `zigzag.py` | `ZigZag`: swing high/low theo `deviation%`. Dùng tăng dần `update(time, high, low)` hoặc 1 lần `ZigZag.compute(df, deviation)` |
 | `trendline.py` | `Trendline` (p1→p2, slope, value_at), `detect_structure()` (HH+HL / LH+LL), `check_breakout()` (1 lần trên df), `BreakoutMonitor` (live từng nến) |
 | `rsi.py` | RSI công thức Wilder: class `RSI` (tăng dần, có `.value`) + hàm vector `rsi()`/`add_rsi()` |
@@ -64,13 +64,17 @@ Sửa file `config.json`, không cần đụng code:
    - Mô hình GIẢM = LH + LL → trendline qua **2 đỉnh** gần nhất (kháng cự).
    - Cấu trúc hỗn hợp (vd HH nhưng LL) → `none` → **không kẻ trendline** (cố ý, tránh đường sai lệch).
 3. **Breakout**: giá **đóng cửa** phá qua trendline (tăng: phá dưới hỗ trợ; giảm: phá trên kháng cự). Mỗi trendline chỉ báo alert **1 lần** (`_signaled` lưu cặp thời gian 2 điểm).
-4. **Xác nhận "phá vỡ thật" bằng phân kỳ RSI**: khi phá trendline, bot lấy 2 điểm "thuộc về" 2 mốc kẻ trend (mô hình giảm: 2 đáy tạo ngay sau 2 đỉnh kẻ trend; mô hình tăng: 2 đỉnh sau 2 đáy kẻ trend) rồi kiểm tra phân kỳ RSI — mô hình giảm: đáy sau thấp hơn nhưng RSI cao hơn (phân kỳ DƯƠNG); mô hình tăng: đỉnh sau cao hơn nhưng RSI thấp hơn (phân kỳ ÂM). Có phân kỳ → `real_breakout=True`, báo `PHA VO THAT`; không → báo breakout thường (chưa xác nhận). Gọi `on_new_bar(..., rsi_value)` với RSI của nến (phải `rsi.update(close)` TRƯỚC).
-4. `has_new_bar()`: lần gọi đầu luôn trả `True` và bị "nuốt" trong main.py (tránh chạy lại nến vừa nạp ở warm-up).
+4. **Xác nhận "phá vỡ thật" bằng phân kỳ RSI** tại 2 điểm "thuộc về" 2 mốc kẻ trend (mô hình giảm: 2 đáy tạo ngay sau 2 đỉnh; mô hình tăng: 2 đỉnh sau 2 đáy):
+   - Mô hình GIẢM (trendline qua 2 ĐỈNH): thu thập các ĐÁY RSI trong cửa sổ từ điểm ĐẦU TIÊN của trendline đến lúc phá vỡ, lấy đáy RSI sâu nhất làm gốc, đo độ dốc đường hồi quy qua các đáy đó. 2 đáy giá THẤP dần mà đường nối các đáy RSI DỐC LÊN (slope > 0) → phân kỳ DƯƠNG → `real_breakout=True` (vd thật: đáy RSI 25.1 (10-06) → 40.0 (20-07), slope +0.445 → cú phá vỡ 21-07 là THẬT). Đáy RSI phải xuất hiện TRƯỚC đáy giá cuối L2 — nếu RSI vẫn đang giảm tại mức đáy mới thì không phải phân kỳ.
+   - Mô hình TĂNG (trendline qua 2 ĐÁY): so sánh trực tiếp RSI tại 2 đỉnh — đỉnh sau CAO hơn (HH) nhưng RSI tại đỉnh sau THẤP HƠN (RSI H_c < RSI H_b) → phân kỳ ÂM → `real_breakout=True`. KHÔNG đo cửa sổ cho mô hình tăng: sau đỉnh RSI cao nhất thì các đỉnh RSI tiếp theo luôn thấp hơn nên độ dốc luôn âm → dễ báo nhầm "thật" (đã kiểm chứng 02-16: RSI 56.6 → 63.1 là xác nhận, không phân kỳ).
+   - `rsi_divergence` chứa `method` (`rsi_extreme_line` — giảm / `rsi_point_compare` — tăng), `window{from,to,rsi_slope,deepest,last_extreme}` + 2 điểm `p1/p2` (giá & RSI) để hiển thị. Gọi `on_new_bar(..., rsi_value)` với RSI của nến (phải `rsi.update(close)` TRƯỚC).
+   - Lưu ý: `real_breakout` được tính ở MỌI nến (không chỉ lúc alert-once) — nến cuối vẫn phản ánh đúng trạng thái.
+4. `next_closed()` (data_feed.py): mỗi chu kỳ chỉ **1 lần fetch** — trả DataFrame nếu có nến mới đóng, `None` nếu chưa (gộp được việc phát hiện + lấy dữ liệu, trước đây `has_new_bar()` + `get_closed_rates()` fetch 2 lần). Sau warm-up, main.py gọi `feed.mark_processed(df)` để đánh dấu nến hiện tại đã xử lý (không fetch lại). `has_new_bar()` giữ lại cho tương thích (mỗi lần gọi vẫn fetch).
 5. MT5 Python package (bản 5.0.x) **không có API vẽ object lên biểu đồ terminal** (`chart_object_create` không tồn tại) → mọi hiển thị trendline đều qua `chart_render.py` → `chart.html`.
 6. `chart.html`/`chart_state.json` là đầu ra sinh bởi `main.py` — nếu sửa logic phân tích hoặc giao diện, nhớ chạy lại main (hoặc script warm-up tương đương) để cập nhật 2 file này.
 7. Dữ liệu thật hiện tại (08-2026): XAUUSD D1 — cập nhật trạng thái mô hình theo lần chạy mới nhất; `none` (chưa có HH+HL hoặc LH+LL) thì chưa có trendline — đây là hành vi đúng, không phải lỗi.
 
 ## Độ trễ đã đo (máy thật)
 
-- Lấy 300 nến: ~1.5 ms · `has_new_bar()`: ~1.4 ms · phân tích 1 nến: ~0 ms · ghi biểu đồ: ~5.6 ms (số đo trên nến H1)
-- Trọn 1 lượt có nến mới: ~7 ms. Độ chễ phát hiện nến mới: 0–2 s (trung bình ~1 s, do `CHECK_INTERVAL`).
+- Lấy 300 nến: ~1.5 ms · phân tích 1 nến: ~0.06 ms (nến báo alert ~0.23 ms) · chu kỳ 1 nến mới với `next_closed()` (1 fetch, không vẽ chart): **~1.5 ms** (số đo trên nến D1)
+- Trọn 1 lượt có nến mới (gồm cả ghi biểu đồ): ~7 ms. Độ chễ phát hiện nến mới: 0–2 s (trung bình ~1 s, do `CHECK_INTERVAL`).
