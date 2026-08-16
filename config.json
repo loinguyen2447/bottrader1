@@ -1,0 +1,11 @@
+{
+  "symbol": "XAUUSD",
+  "timeframe": "D1",
+  "bars": 300,
+  "rsi_period": 14,
+  "check_interval": 2,
+  "deviation_by_timeframe": {
+    "D1": 6.0
+  },
+  "deviation_default": 0.5
+}

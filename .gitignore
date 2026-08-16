@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+
+# Dữ liệu nội bộ của ứng dụng (Freebuff workspace - có thể chứa dữ liệu riêng tư)
+.freebuff/
+
+# File sinh tự động mỗi lần chạy (tái tạo được bằng `python main.py`)
+chart.html
+chart_state.json
+preview.html
+
+# Cấu hình/trạng thái nhạy cảm (không bao giờ commit)
+.env
+*.log
+
+# Hệ điều hành
+.DS_Store
+Thumbs.db
